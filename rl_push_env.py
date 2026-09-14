@@ -792,6 +792,16 @@ class PushEnv:
             cube_quat = cube_quat_subset
         self.cube.set_quat(cube_quat, envs_idx=envs_idx)
 
+        # Zero the cube's linear AND angular velocity so a reset starts from rest.
+        # set_pos/set_quat only rewrite the free-joint coordinate block (joint_q)
+        # and re-run FK, which derives body_qd from the (unchanged) joint_qd -- the
+        # stale velocity from the previous episode therefore survives and is
+        # integrated on the next step, making the cube keep sliding/spinning.
+        # SolverMuJoCo keeps the true velocity in state.joint_qd, so it must be
+        # zeroed here; body_qd is cleared in step with it for an immediately
+        # consistent readout.
+        self.cube.set_vel(torch.zeros(num_reset, 6, device=self.device), envs_idx=envs_idx)
+
         # ── Mass randomization ──
         mass_tensor = self.obj_randomizer.sample_masses(num_reset, self.device)
         if mass_tensor is not None:

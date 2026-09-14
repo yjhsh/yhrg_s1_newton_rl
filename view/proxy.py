@@ -1389,6 +1389,26 @@ class NewtonRigidBody:
             torch.arange(self.count, device=self.device) * bodies_per_world + body_local
         )
 
+        # ------------------------------------------------------------------
+        # Free-joint DOF mapping (generalized velocity = state.joint_qd)
+        # ------------------------------------------------------------------
+        # SolverMuJoCo keeps the authoritative body velocity in state.joint_qd
+        # (6 generalized velocities for a free body: 3 angular + 3 linear).
+        # set_pos/set_quat only rewrite the 7-component coordinate block
+        # (state.joint_q) and re-run FK, which derives body_qd from joint_qd --
+        # so a stale joint_qd (the previous episode's velocity) survives and is
+        # integrated on the next step. A velocity reset must therefore write
+        # state.joint_qd, which this mapping addresses.
+        self.dofs_per_world = int(model.joint_dof_count) // self.count
+        qd_start = np.asarray(model.joint_qd_start.numpy())
+        self.dof_start_in_world = int(qd_start[first_joint_in_world])
+
+        worlds = torch.arange(self.count, device=self.device).unsqueeze(1)
+        local = torch.arange(6, device=self.device).unsqueeze(0)
+        self._dof_global = (
+            worlds * self.dofs_per_world + self.dof_start_in_world + local
+        )
+
     def bind(self, state) -> None:
         """
         Bind the current simulation state.
@@ -1466,3 +1486,36 @@ class NewtonRigidBody:
         """
         state = self._resolve(state)
         self._set_free_coords(state, envs_idx, quats, 3, 4)
+
+    def set_vel(self, velocity: torch.Tensor, envs_idx=None, state=None) -> None:
+        """
+        Set world linear/angular velocities for the given worlds.
+
+        Args:
+            velocity: Velocity 6-vectors, shape ``(num_selected, 6)`` when a mask is
+                given, otherwise ``(count, 6)``; a single ``(6,)`` row is broadcast to
+                every selected world. Ordering is
+                ``(ang_x, ang_y, ang_z, lin_x, lin_y, lin_z)``.
+            envs_idx: Optional bool mask or index tensor.
+            state: Optional state override.
+        """
+        state = self._resolve(state)
+        rows = self._world_rows(envs_idx)
+
+        vals = velocity.to(torch.float32)
+        if vals.ndim == 1:
+            # One row broadcast to every selected world.
+            vals = vals.unsqueeze(0).expand(rows.numel(), -1)
+        elif vals.shape[0] != rows.numel() and vals.shape[0] == self.count:
+            # Full-batch input with a mask: keep the selected rows only.
+            vals = vals[rows]
+        flat = vals.reshape(-1, 6)
+
+        # SolverMuJoCo keeps the authoritative velocity in state.joint_qd (the
+        # generalized velocity); state.body_qd is only an FK output derived from
+        # it on the next step. Zeroing both keeps the reset state consistent and
+        # makes get_vel() (which reads body_qd) report the new value immediately.
+        jqd = wp.to_torch(state.joint_qd)
+        jqd[self._dof_global[rows]] = flat
+        bqd = wp.to_torch(state.body_qd)
+        bqd[self._body_global[rows]] = flat

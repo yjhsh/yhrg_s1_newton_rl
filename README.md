@@ -29,13 +29,13 @@ pytorch3d==0.7.9
 Train:
 
 ```bash
-python rl_integration.py --num_envs 4096 --max_iterations 5000
+python rl_integration.py --num_envs 4096 --max_iterations 10000
 ```
 
 Evaluate:
 
 ```bash
-python rl_integration.py --eval -e examples1 --checkpoint model_4999.pt --num_envs 1 --num_episodes 5 --vis
+python rl_integration.py --eval -e examples1 --checkpoint model_9999.pt --num_envs 1 --num_episodes 5 --vis
 ```
 
 Checkpoints and TensorBoard logs are written to `logs/<exp_name>/` — the trained
